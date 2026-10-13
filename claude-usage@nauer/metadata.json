@@ -1,0 +1,14 @@
+{
+  "uuid": "claude-usage@nauer",
+  "name": "Claude Usage",
+  "description": "Shows your Claude plan's session and weekly limits in the top bar, and what your Claude Code usage would have cost at API list prices.\n\nUses the login stored by Claude Code (~/.claude/.credentials.json) and reads Claude Code transcripts locally.",
+  "version": 1,
+  "version-name": "1.0.0",
+  "shell-version": [
+    "48",
+    "49",
+    "50",
+    "51"
+  ],
+  "settings-schema": "org.gnome.shell.extensions.claude-usage"
+}

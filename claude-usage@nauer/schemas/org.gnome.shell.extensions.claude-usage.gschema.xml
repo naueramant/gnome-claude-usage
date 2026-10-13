@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.claude-usage" path="/org/gnome/shell/extensions/claude-usage/">
+
+    <!-- Account -->
+    <key name="use-claude-credentials" type="b">
+      <default>true</default>
+      <summary>Read the Claude Code login</summary>
+      <description>When off, the extension never reads ~/.claude/.credentials.json and shows no plan limits.</description>
+    </key>
+    <key name="claude-config-dir" type="s">
+      <default>''</default>
+      <summary>Claude Code config directories</summary>
+      <description>Comma-separated. Empty uses $CLAUDE_CONFIG_DIR, ~/.config/claude and ~/.claude.</description>
+    </key>
+    <key name="plan" type="s">
+      <choices>
+        <choice value="auto"/>
+        <choice value="pro"/>
+        <choice value="max5"/>
+        <choice value="max20"/>
+        <choice value="team-standard"/>
+        <choice value="team-premium"/>
+        <choice value="enterprise"/>
+        <choice value="custom"/>
+      </choices>
+      <default>'auto'</default>
+      <summary>Subscription plan</summary>
+    </key>
+    <key name="custom-price" type="d">
+      <range min="0" max="100000"/>
+      <default>0</default>
+      <summary>Monthly price override (USD)</summary>
+      <description>0 uses the plan's list price.</description>
+    </key>
+    <key name="detected-plan" type="s">
+      <default>''</default>
+      <summary>Last auto-detected plan (internal)</summary>
+    </key>
+
+    <!-- Top bar -->
+    <key name="limit-to-show" type="s">
+      <choices>
+        <choice value="most-constrained"/>
+        <choice value="session"/>
+        <choice value="weekly"/>
+      </choices>
+      <default>'most-constrained'</default>
+      <summary>Limit shown in the top bar</summary>
+    </key>
+    <key name="display-mode" type="s">
+      <choices>
+        <choice value="ring-percent"/>
+        <choice value="ring"/>
+        <choice value="percent"/>
+        <choice value="session-weekly"/>
+      </choices>
+      <default>'ring-percent'</default>
+      <summary>Top bar display</summary>
+    </key>
+    <key name="position" type="s">
+      <choices>
+        <choice value="left"/>
+        <choice value="center"/>
+        <choice value="right"/>
+      </choices>
+      <default>'right'</default>
+      <summary>Top bar position</summary>
+    </key>
+    <key name="accent-color" type="s">
+      <default>'#d97757'</default>
+      <summary>Accent colour (#rrggbb)</summary>
+    </key>
+
+    <!-- Cost comparison -->
+    <key name="currency" type="s">
+      <choices>
+        <choice value="USD"/>
+        <choice value="EUR"/>
+        <choice value="GBP"/>
+        <choice value="DKK"/>
+        <choice value="SEK"/>
+        <choice value="NOK"/>
+      </choices>
+      <default>'USD'</default>
+      <summary>Display currency</summary>
+    </key>
+    <key name="exchange-rate" type="d">
+      <range min="0.0001" max="100000"/>
+      <default>1</default>
+      <summary>Units of the display currency per US dollar</summary>
+    </key>
+    <key name="heatmap-metric" type="s">
+      <choices>
+        <choice value="cost"/>
+        <choice value="tokens"/>
+      </choices>
+      <default>'cost'</default>
+      <summary>Heatmap metric</summary>
+    </key>
+
+    <!-- Notifications & refresh -->
+    <key name="notify-warning" type="b">
+      <default>true</default>
+      <summary>Notify when a limit passes the warning threshold</summary>
+    </key>
+    <key name="warn-threshold" type="u">
+      <range min="50" max="100"/>
+      <default>80</default>
+      <summary>Warning threshold (percent)</summary>
+    </key>
+    <key name="notify-reset" type="b">
+      <default>false</default>
+      <summary>Notify when a limit resets</summary>
+    </key>
+    <key name="refresh-interval" type="u">
+      <range min="1" max="60"/>
+      <default>5</default>
+      <summary>Refresh interval (minutes)</summary>
+    </key>
+  </schema>
+</schemalist>
