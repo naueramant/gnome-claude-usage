@@ -1,5 +1,6 @@
-// Content of the drop-down: plan header, limits, value comparison, activity
-// heatmaps and footer. Built once, then updated in place from a state object.
+// Content of the drop-down: plan header, then the sections (limits, value
+// comparison, activity heatmaps, token house) in the user's order, and a
+// footer. Built once, then updated in place from a state object.
 
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
@@ -11,6 +12,7 @@ import {
     NEUTRAL_COLOR, WEEKDAYS, formatClock, formatDay, formatMoney, formatResetLine,
     formatTokens, levelColor, palette, rampLevel,
 } from './format.js';
+import {FRAME_MS, HouseScene, LEVELS, levelFor} from './house.js';
 
 const USAGE_URL = 'https://claude.ai/settings/usage';
 
@@ -115,12 +117,40 @@ class UsageMenu extends St.BoxLayout {
         this._selHour = null;
         this._state = null;
         this._opts = null;
+        this._open = false;
+        this._frame = 0;
+        this._frameTimer = 0;
 
         this._buildHeader();
-        this._buildLimits();
-        this._buildValue();
-        this._buildActivity();
+        this._body = vbox('cu-sections');
+        this.add_child(this._body);
+        this._sections = {
+            limits: this._buildLimits(),
+            value: this._buildValue(),
+            activity: this._buildActivity(),
+            house: this._buildHouse(),
+        };
         this._buildFooter();
+
+        this.connect('destroy', () => this._stopAnimation());
+    }
+
+    /** Called when the popup opens or closes; the house only animates while visible. */
+    setOpen(open) {
+        this._open = open;
+        this._syncAnimation();
+    }
+
+    _applySections(order, hidden) {
+        const ids = [...order.filter(id => this._sections[id]),
+            ...Object.keys(this._sections).filter(id => !order.includes(id))];
+        ids.forEach((id, i) => {
+            const actor = this._sections[id];
+            if (actor.get_parent() !== this._body)
+                this._body.add_child(actor);
+            this._body.set_child_at_index(actor, i);
+            actor.visible = !hidden.includes(id);
+        });
     }
 
     // ── Header ────────────────────────────────────────────────────────────
@@ -145,7 +175,7 @@ class UsageMenu extends St.BoxLayout {
     // ── Limits ────────────────────────────────────────────────────────────
     _buildLimits() {
         this._limitsCard = vbox('cu-card cu-limits');
-        this.add_child(this._limitsCard);
+        return this._limitsCard;
     }
 
     _renderLimits(state, pal) {
@@ -254,7 +284,7 @@ class UsageMenu extends St.BoxLayout {
             this._tokenStats[name] = s.value;
         });
         card.add_child(tokens);
-        this.add_child(card);
+        return card;
     }
 
     _renderValue(state, pal, opts) {
@@ -356,8 +386,7 @@ class UsageMenu extends St.BoxLayout {
         legend.add_child(label('More', 'cu-tiny'));
         detail.add_child(legend);
         card.add_child(detail);
-
-        this.add_child(card);
+        return card;
     }
 
     _setView(view) {
@@ -527,6 +556,111 @@ class UsageMenu extends St.BoxLayout {
         this._selectedDetail = this._hourDetail(this._selHour, total);
     }
 
+    // ── Token house ───────────────────────────────────────────────────────
+    _buildHouse() {
+        const section = vbox('cu-house-section');
+
+        const card = vbox('cu-card cu-house');
+        const head = hbox('cu-card-head');
+        head.add_child(label('Token house', 'cu-strong'));
+        this._houseLevel = label('', 'cu-pill cu-level-pill');
+        head.add_child(this._houseLevel);
+        card.add_child(head);
+
+        this._houseScene = new HouseScene({x_align: Clutter.ActorAlign.CENTER, accessible_name: 'Token house scene'});
+        card.add_child(this._houseScene);
+
+        this._houseLine = label('', 'cu-body');
+        this._houseLine.clutter_text.line_wrap = true;
+        this._houseLine.clutter_text.line_wrap_mode = Pango.WrapMode.WORD_CHAR;
+        card.add_child(this._houseLine);
+
+        const progress = vbox('cu-house-progress');
+        const progressTop = hbox('cu-house-progress-top');
+        this._houseNext = label('', 'cu-caption', {x_expand: true});
+        progressTop.add_child(this._houseNext);
+        this._houseUtil = label('', 'cu-caption');
+        progressTop.add_child(this._houseUtil);
+        progress.add_child(progressTop);
+        this._houseBar = new SegmentBar('cu-bar');
+        progress.add_child(this._houseBar);
+        card.add_child(progress);
+
+        const tiers = gridBox('cu-house-tiers', 0, 6, {column_homogeneous: true});
+        this._houseTiers = LEVELS.map((lvl, i) => {
+            const box = vbox('cu-tier', {x_expand: true});
+            const bar = new St.Widget({style_class: 'cu-tier-bar', x_expand: true});
+            const name = label(lvl.name, 'cu-tiny', {x_align: Clutter.ActorAlign.CENTER});
+            box.add_child(bar);
+            box.add_child(name);
+            tiers.layout_manager.attach(box, i, 0, 1, 1);
+            return {bar, name};
+        });
+        card.add_child(tiers);
+        section.add_child(card);
+
+        return section;
+    }
+
+    _renderHouse(state, pal, opts) {
+        const house = state.house;
+        const util = house?.util ?? 0;
+        const lvl = levelFor(util);
+        const name = LEVELS[lvl - 1].name;
+
+        this._houseLevel.text = `Lv ${lvl} · ${name}`;
+        this._houseLevel.set_style(`color: ${pal.light};`);
+        this._houseScene.setScene(lvl, opts.houseAnimate ? this._frame : 0);
+
+        if (!house) {
+            this._houseLine.text = 'Your house grows with how much of your weekly limits you use. ' +
+                'It starts once a weekly limit has been read.';
+        } else if (house.weeks === 0) {
+            this._houseLine.text = `You've used ${util}% of your weekly limits so far this week.`;
+        } else {
+            const span = house.weeks === 1 ? 'last week' : `on average over the last ${house.weeks} weeks`;
+            this._houseLine.text = `You used ${util}% of your weekly limits ${span}.`;
+        }
+
+        const next = LEVELS[lvl];
+        const from = LEVELS[lvl - 1].from;
+        this._houseNext.text = next
+            ? `Next: ${next.name} at ${next.from}% · ${next.from - util} ${next.from - util === 1 ? 'point' : 'points'} to go`
+            : 'Max level · every token put to work';
+        this._houseUtil.text = `${util}%`;
+        this._houseBar.setSegments([{
+            weight: next ? (util - from) / (next.from - from) * 100 : 100,
+            color: pal.light,
+        }], 100);
+
+        this._houseTiers.forEach((t, i) => {
+            t.bar.set_style(`background-color: ${i < lvl ? pal.light : 'rgba(255,255,255,0.15)'};`);
+            t.name.set_style(`color: ${i + 1 === lvl ? '#ffffff' : 'rgba(255,255,255,0.55)'};`);
+        });
+    }
+
+    _syncAnimation() {
+        const o = this._opts;
+        const run = this._open && o && o.houseAnimate && this._sections.house.visible;
+        if (!run) {
+            this._stopAnimation();
+            return;
+        }
+        if (this._frameTimer)
+            return;
+        this._frameTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, FRAME_MS, () => {
+            this._frame = (this._frame + 1) % 3;
+            this._houseScene.setScene(levelFor(this._state?.house?.util ?? 0), this._frame);
+            return GLib.SOURCE_CONTINUE;
+        });
+    }
+
+    _stopAnimation() {
+        if (this._frameTimer)
+            GLib.source_remove(this._frameTimer);
+        this._frameTimer = 0;
+    }
+
     // ── Footer ────────────────────────────────────────────────────────────
     _buildFooter() {
         const row = hbox('cu-footer');
@@ -542,7 +676,8 @@ class UsageMenu extends St.BoxLayout {
 
     /**
      * @param {object} state see Indicator._state
-     * @param {object} opts {accent, currency, rate, metric, interval}
+     * @param {object} opts {accent, currency, rate, metric, interval, sections,
+     *   hiddenSections, houseAnimate}
      */
     update(state, opts) {
         // Selections are indices into the scan, so they don't survive a new one.
@@ -573,11 +708,14 @@ class UsageMenu extends St.BoxLayout {
         this._refreshButton.reactive = !state.busy;
         this._refreshButton.opacity = state.busy ? 128 : 255;
 
+        this._applySections(opts.sections, opts.hiddenSections);
         this._renderLimits(state, pal);
         this._renderValue(state, pal, opts);
         this._renderActivity();
+        this._renderHouse(state, pal, opts);
+        this._syncAnimation();
 
-        const every = `every ${opts.interval} min`;
+        const every = `every ${opts.interval}`;
         this._updated.text = state.updatedAt
             ? `Updated ${formatClock(GLib.DateTime.new_from_unix_local(state.updatedAt / 1000))} · ${every}`
             : every;

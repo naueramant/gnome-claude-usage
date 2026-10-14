@@ -58,19 +58,24 @@ export function normalizeLimits(usage) {
 }
 
 /**
- * The limit the top bar should show.
+ * The limits the top bar should show, in display order.
  *
  * @param {object[]} limits
- * @param {string} which 'most-constrained' | 'session' | 'weekly'
+ * @param {string} which 'most-constrained' | 'session' | 'weekly' | 'both'
+ * @returns {object[]} empty when there's no data
  */
-export function pickLimit(limits, which) {
+export function pickLimits(limits, which) {
     if (limits.length === 0)
-        return null;
+        return [];
+    const session = limits.find(l => l.kind === 'session');
+    const weekly = limits.find(l => l.kind === 'weekly_all') ?? limits.find(l => l.kind.startsWith('weekly'));
     if (which === 'session')
-        return limits.find(l => l.kind === 'session') ?? limits[0];
+        return [session ?? limits[0]];
     if (which === 'weekly')
-        return limits.find(l => l.kind === 'weekly_all') ?? limits.find(l => l.kind.startsWith('weekly')) ?? limits[0];
-    return limits.reduce((a, b) => (b.pct > a.pct ? b : a));
+        return [weekly ?? limits[0]];
+    if (which === 'both' && session && weekly)
+        return [session, weekly];
+    return [limits.reduce((a, b) => (b.pct > a.pct ? b : a))];
 }
 
 export function hexToRgb(hex) {
@@ -200,6 +205,16 @@ export function formatResetLine(limit) {
 export function formatDay(key) {
     const [y, m, d] = key.split('-').map(Number);
     return GLib.DateTime.new_local(y, m, d, 0, 0, 0).format('%a %-d %b');
+}
+
+/** "30 s", "5 min", "1 h 30 min" for a refresh interval in seconds. */
+export function formatInterval(secs) {
+    if (secs < 60)
+        return `${secs} s`;
+    if (secs < 3600)
+        return secs % 60 ? `${Math.floor(secs / 60)} min ${secs % 60} s` : `${secs / 60} min`;
+    const h = Math.floor(secs / 3600), m = Math.round((secs % 3600) / 60);
+    return m ? `${h} h ${m} min` : `${h} h`;
 }
 
 export const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];

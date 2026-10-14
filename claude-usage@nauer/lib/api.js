@@ -10,11 +10,15 @@ Gio._promisify(Gio.File.prototype, 'load_contents_async', 'load_contents_finish'
 Gio._promisify(Gio.Subprocess.prototype, 'communicate_utf8_async', 'communicate_utf8_finish');
 
 const API = 'https://api.anthropic.com/api/oauth';
+// A scan normally takes well under a second; give up on one that hangs.
+const SCAN_TIMEOUT_S = 60;
 
 export class HttpError extends Error {
-    constructor(status, message) {
+    constructor(status, message, retryAfter = 0) {
         super(message);
         this.status = status;
+        // Seconds the server asked us to wait (Retry-After), or 0.
+        this.retryAfter = retryAfter;
     }
 }
 
@@ -75,9 +79,13 @@ export class ClaudeClient {
 
         const bytes = await this._session.send_and_read_async(
             msg, GLib.PRIORITY_DEFAULT, this._cancellable);
-        const status = msg.get_status();
-        if (status !== Soup.Status.OK)
-            throw new HttpError(status, `${path}: HTTP ${status}`);
+        // Not get_status(): it returns a Soup.Status enum, and GJS throws on
+        // codes the enum lacks (e.g. 429).
+        const status = msg.status_code;
+        if (status !== Soup.Status.OK) {
+            const retryAfter = parseInt(msg.response_headers.get_one('Retry-After') ?? '', 10);
+            throw new HttpError(status, `${path}: HTTP ${status}`, Number.isFinite(retryAfter) ? retryAfter : 0);
+        }
         return JSON.parse(new TextDecoder().decode(bytes.get_data()));
     }
 
@@ -103,7 +111,24 @@ export class ClaudeClient {
 
         const proc = Gio.Subprocess.new(argv,
             Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE);
-        const [stdout, stderr] = await proc.communicate_utf8_async(null, this._cancellable);
+        let timedOut = false;
+        const timer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, SCAN_TIMEOUT_S, () => {
+            timedOut = true;
+            proc.force_exit();
+            return GLib.SOURCE_REMOVE;
+        });
+        let stdout, stderr;
+        try {
+            [stdout, stderr] = await proc.communicate_utf8_async(null, this._cancellable);
+        } catch (e) {
+            proc.force_exit();
+            throw e;
+        } finally {
+            if (!timedOut)
+                GLib.source_remove(timer);
+        }
+        if (timedOut)
+            throw new Error(`scanner timed out after ${SCAN_TIMEOUT_S} s`);
         if (!proc.get_successful())
             throw new Error(`scanner failed: ${stderr?.trim()}`);
         return JSON.parse(stdout);

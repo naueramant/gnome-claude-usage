@@ -15,10 +15,10 @@ INSTALL_DIR := $(HOME)/.local/share/gnome-shell/extensions/$(UUID)
 SCHEMA      := $(SRC)/schemas/org.gnome.shell.extensions.claude-usage.gschema.xml
 
 JS_FILES    := $(shell find $(SRC) -name '*.js')
-EXTRA       := $(patsubst $(SRC)/%,--extra-source=%,$(wildcard $(SRC)/lib))
+EXTRA       := $(patsubst $(SRC)/%,--extra-source=%,$(wildcard $(SRC)/lib $(SRC)/icons))
 
 .PHONY: all help schemas check pack install uninstall enable disable reload \
-        prefs nested logs scan clean
+        prefs nested logs scan screenshots clean
 
 all: pack
 
@@ -36,6 +36,7 @@ help:
 	@echo "  nested     run a nested GNOME Shell with the extension enabled"
 	@echo "  logs       follow GNOME Shell logs filtered to this extension"
 	@echo "  scan       run the transcript scanner and pretty-print its output"
+	@echo "  screenshots  render the README screenshots from mock data (needs Chrome + ImageMagick)"
 	@echo "  clean      remove build output"
 
 schemas: $(SRC)/schemas/gschemas.compiled
@@ -53,7 +54,7 @@ check:
 	@gjs -m $(SRC)/lib/scanner.js > /dev/null
 	@echo "OK"
 
-$(ZIP): $(JS_FILES) $(SCHEMA) $(SRC)/metadata.json $(SRC)/stylesheet.css
+$(ZIP): $(JS_FILES) $(wildcard $(SRC)/icons/*.svg) $(SCHEMA) $(SRC)/metadata.json $(SRC)/stylesheet.css
 	@mkdir -p $(DIST)
 	gnome-extensions pack --force --out-dir=$(DIST) $(EXTRA) $(SRC)
 
@@ -92,6 +93,9 @@ logs:
 
 scan:
 	gjs -m $(SRC)/lib/scanner.js | python3 -m json.tool | head -60
+
+screenshots:
+	assets/mock/build.sh
 
 clean:
 	rm -rf $(BUILD) $(DIST) $(SRC)/schemas/gschemas.compiled

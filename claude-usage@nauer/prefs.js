@@ -4,12 +4,21 @@ import Adw from 'gi://Adw';
 import Gdk from 'gi://Gdk';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
+import GObject from 'gi://GObject';
 import Gtk from 'gi://Gtk';
 
 import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
 import {configDirs} from './lib/api.js';
 import {PLANS} from './lib/pricing.js';
+
+// Menu sections, in their default order.
+const SECTIONS = {
+    limits: ['Limits', 'Session and weekly usage bars'],
+    value: ['Value', 'Plan price vs. API cost, models and tokens'],
+    activity: ['Activity heatmap', 'Last 30 days by day or by hour'],
+    house: ['Token house', 'Pixel home that upgrades as you use your limits'],
+};
 
 /** An Adw.ComboRow bound to a string setting with a fixed set of choices. */
 function choiceRow(settings, key, title, choices, subtitle = '') {
@@ -48,15 +57,48 @@ export default class ClaudeUsagePreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
         const settings = this.getSettings();
         window._settings = settings;
-        window.set_default_size(640, 860);
+        window.set_default_size(640, 680);
+        // Breakpoints need an explicit minimum size.
+        window.set_size_request(360, 300);
 
-        const page = new Adw.PreferencesPage();
-        window.add(page);
+        const icons = Gtk.IconTheme.get_for_display(Gdk.Display.get_default());
+        const iconDir = GLib.build_filenamev([this.path, 'icons']);
+        if (!icons.get_search_path().includes(iconDir))
+            icons.add_search_path(iconDir);
 
-        page.add(this._accountGroup(settings));
-        page.add(this._topBarGroup(settings));
-        page.add(this._costGroup(settings));
-        page.add(this._notifyGroup(settings));
+        const pages = [
+            ['Account', 'avatar-default-symbolic', [this._accountGroup(settings), this._refreshGroup(settings)]],
+            ['Top bar', 'cu-topbar-symbolic', [this._topBarGroup(settings)]],
+            ['Panel', 'cu-panel-symbolic', [this._sectionsGroup(settings), this._houseGroup(settings)]],
+            ['Cost', 'cu-cost-symbolic', [this._costGroup(settings)]],
+            ['Alerts', 'preferences-system-notifications-symbolic', [this._alertsGroup(settings)]],
+        ];
+        const stack = new Adw.ViewStack();
+        for (const [title, iconName, groups] of pages) {
+            const page = new Adw.PreferencesPage();
+            groups.forEach(g => page.add(g));
+            stack.add_titled_with_icon(page, title, title, iconName);
+        }
+
+        // Adw.PreferencesWindow only keeps its tabs in the header when the
+        // wide icon-beside-label style fits (~760 px for five tabs), so build
+        // our own header with the compact icon-above-label tabs instead.
+        const switcher = new Adw.ViewSwitcher({
+            stack,
+            policy: Adw.ViewSwitcherPolicy.NARROW,
+            margin_top: 6,
+            margin_bottom: 6,
+        });
+        const bottomBar = new Adw.ViewSwitcherBar({stack});
+        const view = new Adw.ToolbarView({content: stack});
+        view.add_top_bar(new Adw.HeaderBar({title_widget: switcher}));
+        view.add_bottom_bar(bottomBar);
+        window.content = view;
+
+        const narrow = new Adw.Breakpoint({condition: Adw.BreakpointCondition.parse('max-width: 540sp')});
+        narrow.add_setter(switcher, 'visible', false);
+        narrow.add_setter(bottomBar, 'reveal', true);
+        window.add_breakpoint(narrow);
     }
 
     _accountGroup(settings) {
@@ -131,18 +173,18 @@ export default class ClaudeUsagePreferences extends ExtensionPreferences {
     }
 
     _topBarGroup(settings) {
-        const group = new Adw.PreferencesGroup({title: 'Top bar'});
+        const group = new Adw.PreferencesGroup({title: 'Indicator'});
 
-        group.add(choiceRow(settings, 'limit-to-show', 'Limit to show', [
+        group.add(choiceRow(settings, 'limit-to-show', 'Show', [
             ['most-constrained', 'Most constrained'],
             ['session', 'Current session'],
             ['weekly', 'Weekly · all models'],
+            ['both', 'Session and weekly'],
         ]));
         group.add(choiceRow(settings, 'display-mode', 'Display as', [
             ['ring-percent', 'Ring and percentage'],
             ['ring', 'Ring only'],
             ['percent', 'Percentage only'],
-            ['session-weekly', 'Session and weekly'],
         ]));
 
         const position = new Adw.ActionRow({title: 'Position'});
@@ -153,7 +195,7 @@ export default class ClaudeUsagePreferences extends ExtensionPreferences {
         position.add_suffix(toggles);
         group.add(position);
 
-        const accent = new Adw.ActionRow({title: 'Accent colour'});
+        const accent = new Adw.ActionRow({title: 'Accent colour', subtitle: 'Used for bars, ring and heatmap'});
         const colorButton = new Gtk.ColorDialogButton({
             valign: Gtk.Align.CENTER,
             dialog: new Gtk.ColorDialog({with_alpha: false}),
@@ -218,16 +260,178 @@ export default class ClaudeUsagePreferences extends ExtensionPreferences {
         return group;
     }
 
-    _notifyGroup(settings) {
-        const group = new Adw.PreferencesGroup({title: 'Notifications & refresh'});
+    _sectionsGroup(settings) {
+        const group = new Adw.PreferencesGroup({
+            title: 'Sections',
+            header_suffix: new Gtk.Label({
+                label: 'Drag to reorder',
+                css_classes: ['dim-label', 'caption'],
+                valign: Gtk.Align.END,
+            }),
+        });
+        const list = new Gtk.ListBox({selection_mode: Gtk.SelectionMode.NONE, css_classes: ['boxed-list']});
+        group.add(list);
 
-        const warn = new Adw.SwitchRow();
-        const syncWarnTitle = () =>
-            (warn.title = `Warn at ${settings.get_uint('warn-threshold')}% of a limit`);
-        settings.connect('changed::warn-threshold', syncWarnTitle);
-        syncWarnTitle();
+        const order = () => {
+            const saved = settings.get_strv('sections').filter(id => SECTIONS[id]);
+            return [...saved, ...Object.keys(SECTIONS).filter(id => !saved.includes(id))];
+        };
+        const move = (id, to) => {
+            const o = order();
+            const from = o.indexOf(id);
+            if (from < 0 || to < 0 || to >= o.length || from === to)
+                return;
+            o.splice(from, 1);
+            o.splice(to, 0, id);
+            settings.set_strv('sections', o);
+        };
+
+        const rows = {};
+        let focusId = null;
+        const build = () => {
+            list.remove_all();
+            for (const [i, id] of order().entries()) {
+                const [title, subtitle] = SECTIONS[id];
+                const row = new Adw.SwitchRow({
+                    title,
+                    subtitle,
+                    active: !settings.get_strv('hidden-sections').includes(id),
+                    tooltip_text: 'Drag, or press Alt+Up / Alt+Down, to reorder',
+                });
+                row.add_prefix(new Gtk.Image({icon_name: 'list-drag-handle-symbolic', css_classes: ['dim-label']}));
+                row.connect('notify::active', () => {
+                    const hidden = settings.get_strv('hidden-sections').filter(h => h !== id);
+                    if (!row.active)
+                        hidden.push(id);
+                    settings.set_strv('hidden-sections', hidden);
+                });
+
+                let hot = [0, 0];
+                const drag = new Gtk.DragSource({actions: Gdk.DragAction.MOVE});
+                drag.connect('prepare', (_src, x, y) => {
+                    hot = [x, y];
+                    return Gdk.ContentProvider.new_for_value(id);
+                });
+                drag.connect('drag-begin', src => src.set_icon(new Gtk.WidgetPaintable({widget: row}), ...hot));
+                row.add_controller(drag);
+
+                const drop = new Gtk.DropTarget({actions: Gdk.DragAction.MOVE});
+                drop.set_gtypes([GObject.TYPE_STRING]);
+                drop.connect('drop', (_target, dragged) => {
+                    // Rebuilding the list from inside the drop handler would
+                    // destroy this controller mid-emission.
+                    GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+                        move(dragged, order().indexOf(id));
+                        return GLib.SOURCE_REMOVE;
+                    });
+                    return true;
+                });
+                row.add_controller(drop);
+
+                const keys = new Gtk.ShortcutController();
+                for (const [trigger, delta] of [['<Alt>Up', -1], ['<Alt>Down', 1]]) {
+                    keys.add_shortcut(new Gtk.Shortcut({
+                        trigger: Gtk.ShortcutTrigger.parse_string(trigger),
+                        action: Gtk.CallbackAction.new(() => {
+                            focusId = id;
+                            move(id, i + delta);
+                            return true;
+                        }),
+                    }));
+                }
+                row.add_controller(keys);
+
+                rows[id] = row;
+                list.append(row);
+            }
+            if (focusId) {
+                rows[focusId]?.grab_focus();
+                focusId = null;
+            }
+        };
+        build();
+        settings.connect('changed::sections', build);
+        settings.connect('changed::hidden-sections', () => {
+            const hidden = settings.get_strv('hidden-sections');
+            for (const [id, row] of Object.entries(rows))
+                row.active = !hidden.includes(id);
+        });
+
+        return group;
+    }
+
+    _houseGroup(settings) {
+        const group = new Adw.PreferencesGroup({title: 'Token house'});
+        const animate = new Adw.SwitchRow({title: 'Animate scene'});
+        settings.bind('house-animate', animate, 'active', Gio.SettingsBindFlags.DEFAULT);
+        group.add(animate);
+        return group;
+    }
+
+    /** "Refresh every [n] [seconds|minutes|hours]"; switching unit keeps the duration. */
+    _intervalRow(settings) {
+        // No seconds: the usage endpoint rate-limits anything under ~2 min.
+        const units = [['minutes', 'Minutes', 60, 2, 1440], ['hours', 'Hours', 3600, 1, 24]];
+        // Move an older seconds-based or sub-2-minute setting onto the new floor.
+        const secs = settings.get_uint('refresh-interval') * ({seconds: 1, minutes: 60, hours: 3600}[settings.get_string('refresh-unit')] ?? 60);
+        if (secs < 120 || settings.get_string('refresh-unit') === 'seconds') {
+            settings.set_uint('refresh-interval', Math.min(1440, Math.max(2, Math.ceil(secs / 60))));
+            settings.set_string('refresh-unit', 'minutes');
+        }
+        const unitOf = () => units.find(([id]) => id === settings.get_string('refresh-unit')) ?? units[1];
+
+        const row = new Adw.SpinRow({
+            title: 'Refresh every',
+            subtitle: 'Minimum 2 minutes (Anthropic rate limit)',
+            adjustment: new Gtk.Adjustment({step_increment: 1, page_increment: 10}),
+        });
+        const unit = new Gtk.DropDown({
+            model: Gtk.StringList.new(units.map(([, name]) => name)),
+            valign: Gtk.Align.CENTER,
+        });
+        row.add_suffix(unit);
+
+        let syncing = false;
+        const sync = () => {
+            syncing = true;
+            const [, , , lower, upper] = unitOf();
+            unit.selected = units.indexOf(unitOf());
+            row.adjustment.lower = lower;
+            row.adjustment.upper = upper;
+            row.value = settings.get_uint('refresh-interval');
+            syncing = false;
+        };
+        row.connect('notify::value', () => {
+            if (!syncing && row.value !== settings.get_uint('refresh-interval'))
+                settings.set_uint('refresh-interval', row.value);
+        });
+        unit.connect('notify::selected', () => {
+            const [id, , secs, lower, upper] = units[unit.selected];
+            if (syncing || id === settings.get_string('refresh-unit'))
+                return;
+            const total = settings.get_uint('refresh-interval') * unitOf()[2];
+            const amount = Math.min(upper, Math.max(lower, Math.round(total / secs)));
+            settings.set_uint('refresh-interval', amount);
+            settings.set_string('refresh-unit', id);
+        });
+        settings.connect('changed::refresh-interval', sync);
+        settings.connect('changed::refresh-unit', sync);
+        sync();
+        return row;
+    }
+
+    _refreshGroup(settings) {
+        const group = new Adw.PreferencesGroup({title: 'Refresh'});
+        group.add(this._intervalRow(settings));
+        return group;
+    }
+
+    _alertsGroup(settings) {
+        const notify = new Adw.PreferencesGroup({title: 'Notifications'});
+
+        const warn = new Adw.SwitchRow({title: 'Warn when nearing a limit'});
         settings.bind('notify-warning', warn, 'active', Gio.SettingsBindFlags.DEFAULT);
-        group.add(warn);
+        notify.add(warn);
 
         const threshold = new Adw.SpinRow({
             title: 'Warning threshold',
@@ -236,20 +440,12 @@ export default class ClaudeUsagePreferences extends ExtensionPreferences {
         });
         settings.bind('warn-threshold', threshold, 'value', Gio.SettingsBindFlags.DEFAULT);
         settings.bind('notify-warning', threshold, 'sensitive', Gio.SettingsBindFlags.GET);
-        group.add(threshold);
+        notify.add(threshold);
 
         const reset = new Adw.SwitchRow({title: 'Notify when a limit resets'});
         settings.bind('notify-reset', reset, 'active', Gio.SettingsBindFlags.DEFAULT);
-        group.add(reset);
+        notify.add(reset);
 
-        const interval = new Adw.SpinRow({
-            title: 'Refresh every',
-            subtitle: 'Minutes',
-            adjustment: new Gtk.Adjustment({lower: 1, upper: 60, step_increment: 1, page_increment: 5}),
-        });
-        settings.bind('refresh-interval', interval, 'value', Gio.SettingsBindFlags.DEFAULT);
-        group.add(interval);
-
-        return group;
+        return notify;
     }
 }
