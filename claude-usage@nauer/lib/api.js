@@ -1,5 +1,6 @@
 // Talks to the claude.ai usage endpoints with the OAuth token Claude Code
-// stores locally, and runs the transcript scanner in a subprocess.
+// stores locally, and runs the transcript scanner and Claude Code's login
+// refresh in subprocesses.
 
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
@@ -12,6 +13,10 @@ Gio._promisify(Gio.Subprocess.prototype, 'communicate_utf8_async', 'communicate_
 const API = 'https://api.anthropic.com/api/oauth';
 // A scan normally takes well under a second; give up on one that hangs.
 const SCAN_TIMEOUT_S = 60;
+// `claude auth status` may need a round trip to refresh the token.
+const LOGIN_TIMEOUT_S = 30;
+// Where Claude Code's installers put it, for when the shell's PATH lacks them.
+const CLAUDE_PATHS = ['.local/bin/claude', '.claude/local/claude', '.npm-global/bin/claude', '.bun/bin/claude'];
 
 export class HttpError extends Error {
     constructor(status, message, retryAfter = 0) {
@@ -39,6 +44,13 @@ export function configDirs(override) {
     ];
 }
 
+/** Path of the `claude` executable, or null when it isn't installed. */
+export function findClaude() {
+    return GLib.find_program_in_path('claude') ??
+        CLAUDE_PATHS.map(p => GLib.build_filenamev([GLib.get_home_dir(), p]))
+            .find(p => GLib.file_test(p, GLib.FileTest.IS_EXECUTABLE)) ?? null;
+}
+
 export class ClaudeClient {
     constructor(extensionPath) {
         this._extensionPath = extensionPath;
@@ -50,10 +62,11 @@ export class ClaudeClient {
     }
 
     /**
-     * The `claudeAiOauth` block of Claude Code's credentials file, or null
-     * when the user isn't signed in.
+     * The `claudeAiOauth` block of Claude Code's credentials file and the
+     * directory it was found in, or null when the user isn't signed in.
      *
      * @param {string[]} dirs
+     * @returns {Promise<{dir: string, oauth: object}|null>}
      */
     async readCredentials(dirs) {
         for (const dir of dirs) {
@@ -62,7 +75,7 @@ export class ClaudeClient {
                 const [bytes] = await file.load_contents_async(this._cancellable);
                 const oauth = JSON.parse(new TextDecoder().decode(bytes)).claudeAiOauth;
                 if (oauth?.accessToken)
-                    return oauth;
+                    return {dir, oauth};
             } catch (e) {
                 if (e.matches?.(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
                     throw e;
@@ -111,8 +124,37 @@ export class ClaudeClient {
 
         const proc = Gio.Subprocess.new(argv,
             Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE);
+        return JSON.parse(await this._communicate(proc, 'scanner', SCAN_TIMEOUT_S));
+    }
+
+    /**
+     * Have Claude Code refresh its expired login. `claude auth status`
+     * refreshes and saves the token as any start of Claude Code does, so the
+     * refresh token Claude Code holds stays valid; redeeming it here instead
+     * would log Claude Code out.
+     *
+     * @param {string} dir config directory holding the credentials
+     * @returns {Promise<boolean>} false when Claude Code isn't installed
+     */
+    async refreshLogin(dir) {
+        const claude = findClaude();
+        if (!claude)
+            return false;
+        const launcher = new Gio.SubprocessLauncher({
+            flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+        });
+        // Claude Code finds its default directories itself.
+        if (!configDirs('').includes(dir))
+            launcher.setenv('CLAUDE_CONFIG_DIR', dir, true);
+        await this._communicate(launcher.spawnv([claude, 'auth', 'status', '--json']),
+            '`claude auth status`', LOGIN_TIMEOUT_S);
+        return true;
+    }
+
+    /** stdout of `proc`, killing it after `timeoutS`; throws if it failed. */
+    async _communicate(proc, what, timeoutS) {
         let timedOut = false;
-        const timer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, SCAN_TIMEOUT_S, () => {
+        const timer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, timeoutS, () => {
             timedOut = true;
             proc.force_exit();
             return GLib.SOURCE_REMOVE;
@@ -128,10 +170,10 @@ export class ClaudeClient {
                 GLib.source_remove(timer);
         }
         if (timedOut)
-            throw new Error(`scanner timed out after ${SCAN_TIMEOUT_S} s`);
+            throw new Error(`${what} timed out after ${timeoutS} s`);
         if (!proc.get_successful())
-            throw new Error(`scanner failed: ${stderr?.trim()}`);
-        return JSON.parse(stdout);
+            throw new Error(`${what} failed: ${stderr?.trim()}`);
+        return stdout;
     }
 
     destroy() {

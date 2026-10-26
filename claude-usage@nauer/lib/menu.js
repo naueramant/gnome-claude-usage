@@ -225,7 +225,7 @@ class UsageMenu extends St.BoxLayout {
     _renderSignIn(state) {
         const messages = {
             'disabled': ['Disconnected', 'Reading your Claude Code credentials is turned off.', 'Connect'],
-            'expired': ['Session expired', 'Run `claude` once to refresh your login, then retry.', 'Retry'],
+            'expired': ['Session expired', 'Couldn\'t refresh your Claude Code login. Run `claude` to sign in again, then retry.', 'Retry'],
             'signed-out': ['Sign in', 'Sign in with Claude Code (`claude`, then /login) to see your plan limits.', 'Retry'],
         };
         const [title, body, action] = messages[state.status] ??

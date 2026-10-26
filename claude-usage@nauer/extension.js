@@ -45,6 +45,10 @@ const UNIT_SECONDS = {seconds: 1, minutes: 60, hours: 3600};
 // A 429 has been seen to persist for 30+ minutes, so start slow.
 const RATE_LIMIT_BACKOFF_S = 5 * 60;
 const RATE_LIMIT_BACKOFF_MAX_S = 30 * 60;
+// Have Claude Code refresh the login this long before the token expires,
+// and try again no sooner than the cooldown after an attempt.
+const RENEW_MARGIN_MS = 5 * 60_000;
+const RENEW_COOLDOWN_MS = 5 * 60_000;
 
 function isNetworkError(e) {
     return e instanceof GLib.Error && (
@@ -105,6 +109,8 @@ class Indicator extends PanelMenu.Button {
         this._running = new Set();
         this._timer = 0;
         this._resetTimer = 0;
+        this._renewAt = 0;
+        this._rejectedToken = null;
 
         this._buildPanel();
         this._menuContent = new UsageMenu({
@@ -343,15 +349,16 @@ class Indicator extends PanelMenu.Button {
             return;
         }
 
-        this._creds = await this._client.readCredentials(dirs);
+        let found = await this._client.readCredentials(dirs);
+        if (found && this._needsRenewal(found.oauth))
+            found = await this._renewLogin(dirs, found);
+        this._creds = found?.oauth ?? null;
         if (!this._creds) {
             Object.assign(s, {status: 'signed-out', limits: [], error: ''});
             return;
         }
         const token = this._creds.accessToken;
-        if (this._creds.expiresAt && this._creds.expiresAt < Date.now()) {
-            // Claude Code refreshes the token itself; we don't touch its
-            // refresh token so we never invalidate its login.
+        if ((this._creds.expiresAt && this._creds.expiresAt < Date.now()) || token === this._rejectedToken) {
             Object.assign(s, {status: 'expired', limits: [], error: ''});
             return;
         }
@@ -381,6 +388,9 @@ class Indicator extends PanelMenu.Button {
             if (isCancelled(e))
                 throw e;
             if (e instanceof HttpError && e.status === 401) {
+                // Revoked before it expired: renew on the next refresh.
+                this._rejectedToken = token;
+                this._renewAt = 0;
                 Object.assign(s, {status: 'expired', limits: [], error: ''});
             } else if (e instanceof HttpError && e.status === 429) {
                 this._backoffS = Math.min(RATE_LIMIT_BACKOFF_MAX_S,
@@ -397,6 +407,32 @@ class Indicator extends PanelMenu.Button {
                 console.warn(`claude-usage: ${e.message}`);
             }
         }
+    }
+
+    _needsRenewal(oauth) {
+        return oauth.accessToken === this._rejectedToken ||
+            (oauth.expiresAt && oauth.expiresAt - RENEW_MARGIN_MS < Date.now());
+    }
+
+    /**
+     * Have Claude Code refresh its login and re-read the credentials. We
+     * never redeem the refresh token ourselves: it's single-use, so that
+     * would log Claude Code out.
+     */
+    async _renewLogin(dirs, found) {
+        if (Date.now() < this._renewAt)
+            return found;
+        this._renewAt = Date.now() + RENEW_COOLDOWN_MS;
+        try {
+            if (!await this._client.refreshLogin(found.dir))
+                return found;
+        } catch (e) {
+            if (isCancelled(e))
+                throw e;
+            console.warn(`claude-usage: ${e.message}`);
+            return found;
+        }
+        return await this._client.readCredentials(dirs);
     }
 
     async _refreshScan(dirs) {

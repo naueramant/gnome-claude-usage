@@ -119,7 +119,7 @@ export default class ClaudeUsagePreferences extends ExtensionPreferences {
                 const expired = creds.oauth.expiresAt && creds.oauth.expiresAt < Date.now();
                 status.title = expired ? 'Signed in · token expired' : 'Signed in';
                 status.subtitle = expired
-                    ? 'Run `claude` once to refresh the login'
+                    ? 'Refreshed automatically through Claude Code on the next update'
                     : 'Using your local Claude Code credentials';
                 button.label = 'Sign out';
                 button.remove_css_class('suggested-action');
