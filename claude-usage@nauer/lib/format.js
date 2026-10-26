@@ -25,11 +25,21 @@ function capitalize(s) {
     return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+/** A readable name for a limit's scope, e.g. `{model: {display_name: 'Fable'}}` → 'Fable'. */
+function scopeName(scope) {
+    if (typeof scope === 'string')
+        return scope;
+    const parts = [scope?.model, scope?.surface]
+        .map(p => (typeof p === 'string' ? p : p?.display_name ?? p?.id))
+        .filter(p => typeof p === 'string' && p);
+    return parts.join(' · ');
+}
+
 function labelFor(kind, scope) {
     if (LIMIT_LABELS[kind])
         return LIMIT_LABELS[kind];
-    const [head, ...rest] = kind.split('_');
-    const tail = scope ?? rest.join(' ');
+    const [head, ...rest] = String(kind ?? 'limit').split('_');
+    const tail = scopeName(scope) || rest.join(' ');
     return tail ? `${capitalize(head)} · ${capitalize(tail)}` : capitalize(head);
 }
 
